@@ -6,168 +6,186 @@
 #include <time.h>
 #include <ctype.h>
 
-#define MAX_ITEMS 2048
-#define TARGET_DIR "./monitor_dir"
-#define LOG_FILE "system_events.log"
+#define MAX_SIZE 2000
+#define FOLDER_NAME "monitor_dir"
+#define LOG "system_events.log"
 
-char current_files[MAX_ITEMS][256];
-int current_file_count = 0;
+// global arrays to store previous state
+char prev_files[MAX_SIZE][256];
+int file_count = 0;
 
-int current_pids[MAX_ITEMS];
-int current_pid_count = 0;
+int prev_pids[MAX_SIZE];
+int pid_count = 0;
 
-// Logging Module
-void log_event(const char *event_type, const char *details) {
-    FILE *file = fopen(LOG_FILE, "a");
-    if (file == NULL) {
-        perror("Failed to open log file");
+// function to write into log file
+void add_to_log(char *event, char *info) {
+    FILE *fp = fopen(LOG, "a");
+    if (fp == NULL) {
+        printf("Error opening log!\n");
         return;
     }
     
-    time_t now = time(NULL);
-    char *time_str = ctime(&now);
-    time_str[strlen(time_str) - 1] = '\0'; // Remove trailing newline
+    // get current time
+    time_t t = time(NULL);
+    char *time_s = ctime(&t);
+    time_s[strlen(time_s) - 1] = '\0'; // remove new line char
     
-    fprintf(file, "[%s] %s: %s\n", time_str, event_type, details);
-    fclose(file);
+    fprintf(fp, "[%s] %s: %s\n", time_s, event, info);
+    fclose(fp);
     
-    printf("[%s] %s: %s\n", time_str, event_type, details);
+    // also print to screen
+    printf("[%s] %s: %s\n", time_s, event, info);
 }
 
-// Helper to check if string is numeric (for PID checking)
-int is_numeric(const char *str) {
-    while (*str) {
-        if (!isdigit(*str)) return 0;
-        str++;
+// check if a string is a number (for pids)
+int check_num(char *s) {
+    int i = 0;
+    while (s[i] != '\0') {
+        if (!isdigit(s[i])) {
+            return 0; // not a number
+        }
+        i++;
     }
     return 1;
 }
 
-// File Monitoring Module
-void scan_files() {
-    DIR *dir = opendir(TARGET_DIR);
-    if (dir == NULL) return;
+// check directory for changes
+void check_files() {
+    DIR *d = opendir(FOLDER_NAME);
+    if (d == NULL) {
+        // printf("cant open folder\n");
+        return;
+    }
     
-    struct dirent *entry;
-    char new_files[MAX_ITEMS][256];
-    int new_file_count = 0;
+    struct dirent *dir_entry;
+    char temp_files[MAX_SIZE][256];
+    int temp_count = 0;
     
-    while ((entry = readdir(dir)) != NULL && new_file_count < MAX_ITEMS) {
-        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-            strncpy(new_files[new_file_count], entry->d_name, 255);
-            new_files[new_file_count][255] = '\0';
-            new_file_count++;
+    // read all files
+    while ((dir_entry = readdir(d)) != NULL) {
+        if (strcmp(dir_entry->d_name, ".") != 0 && strcmp(dir_entry->d_name, "..") != 0) {
+            strcpy(temp_files[temp_count], dir_entry->d_name);
+            temp_count++;
         }
     }
-    closedir(dir);
+    closedir(d);
     
-    // Check for created files
-    for (int i = 0; i < new_file_count; i++) {
-        int found = 0;
-        for (int j = 0; j < current_file_count; j++) {
-            if (strcmp(new_files[i], current_files[j]) == 0) {
-                found = 1; break;
+    // did any new file get created?
+    for (int i = 0; i < temp_count; i++) {
+        int is_found = 0;
+        for (int j = 0; j < file_count; j++) {
+            if (strcmp(temp_files[i], prev_files[j]) == 0) {
+                is_found = 1; 
+                break;
             }
         }
-        if (!found && current_file_count > 0) { 
-            char msg[512];
-            snprintf(msg, sizeof(msg), "File '%s' was created.", new_files[i]);
-            log_event("FILE_CREATE", msg);
+        if (is_found == 0 && file_count > 0) { 
+            char buff[500];
+            sprintf(buff, "File '%s' was created.", temp_files[i]);
+            add_to_log("FILE_CREATE", buff);
         }
     }
     
-    // Check for deleted files
-    for (int i = 0; i < current_file_count; i++) {
-        int found = 0;
-        for (int j = 0; j < new_file_count; j++) {
-            if (strcmp(current_files[i], new_files[j]) == 0) {
-                found = 1; break;
+    // did any file get deleted?
+    for (int i = 0; i < file_count; i++) {
+        int is_found = 0;
+        for (int j = 0; j < temp_count; j++) {
+            if (strcmp(prev_files[i], temp_files[j]) == 0) {
+                is_found = 1; 
+                break;
             }
         }
-        if (!found && current_file_count > 0) {
-            char msg[512];
-            snprintf(msg, sizeof(msg), "File '%s' was deleted.", current_files[i]);
-            log_event("FILE_DELETE", msg);
+        if (is_found == 0 && file_count > 0) {
+            char buff[500];
+            sprintf(buff, "File '%s' was deleted.", prev_files[i]);
+            add_to_log("FILE_DELETE", buff);
         }
     }
     
-    // Update baseline
-    current_file_count = new_file_count;
-    for (int i = 0; i < new_file_count; i++) {
-        strcpy(current_files[i], new_files[i]);
+    // copy current to previous for next time
+    file_count = temp_count;
+    for (int i = 0; i < temp_count; i++) {
+        strcpy(prev_files[i], temp_files[i]);
     }
 }
 
-// Process Monitoring Module
-void scan_processes() {
-    DIR *dir = opendir("/proc");
-    if (dir == NULL) return;
+// check proc for processes
+void check_procs() {
+    DIR *d = opendir("/proc");
+    if (d == NULL) return;
     
-    struct dirent *entry;
-    int new_pids[MAX_ITEMS];
-    int new_pid_count = 0;
+    struct dirent *dir_entry;
+    int temp_pids[MAX_SIZE];
+    int t_count = 0;
     
-    while ((entry = readdir(dir)) != NULL && new_pid_count < MAX_ITEMS) {
-        if (is_numeric(entry->d_name)) {
-            new_pids[new_pid_count++] = atoi(entry->d_name);
+    while ((dir_entry = readdir(d)) != NULL) {
+        if (check_num(dir_entry->d_name)) {
+            temp_pids[t_count] = atoi(dir_entry->d_name);
+            t_count++;
         }
     }
-    closedir(dir);
+    closedir(d);
     
-    // Check for newly started processes
-    for (int i = 0; i < new_pid_count; i++) {
-        int found = 0;
-        for (int j = 0; j < current_pid_count; j++) {
-            if (new_pids[i] == current_pids[j]) {
-                found = 1; break;
+    // new process started?
+    for (int i = 0; i < t_count; i++) {
+        int is_found = 0;
+        for (int j = 0; j < pid_count; j++) {
+            if (temp_pids[i] == prev_pids[j]) {
+                is_found = 1; 
+                break;
             }
         }
-        if (!found && current_pid_count > 0) {
-            char msg[512];
-            snprintf(msg, sizeof(msg), "Process with PID %d started.", new_pids[i]);
-            log_event("PROCESS_START", msg);
+        if (is_found == 0 && pid_count > 0) {
+            char buff[500];
+            sprintf(buff, "Process with PID %d started.", temp_pids[i]);
+            add_to_log("PROCESS_START", buff);
         }
     }
     
-    // Check for terminated processes
-    for (int i = 0; i < current_pid_count; i++) {
-        int found = 0;
-        for (int j = 0; j < new_pid_count; j++) {
-            if (current_pids[i] == new_pids[j]) {
-                found = 1; break;
+    // process ended?
+    for (int i = 0; i < pid_count; i++) {
+        int is_found = 0;
+        for (int j = 0; j < t_count; j++) {
+            if (prev_pids[i] == temp_pids[j]) {
+                is_found = 1; 
+                break;
             }
         }
-        if (!found && current_pid_count > 0) {
-            char msg[512];
-            snprintf(msg, sizeof(msg), "Process with PID %d terminated.", current_pids[i]);
-            log_event("PROCESS_STOP", msg);
+        if (is_found == 0 && pid_count > 0) {
+            char buff[500];
+            sprintf(buff, "Process with PID %d terminated.", prev_pids[i]);
+            add_to_log("PROCESS_STOP", buff);
         }
     }
     
-    // Update baseline
-    current_pid_count = new_pid_count;
-    for (int i = 0; i < new_pid_count; i++) {
-        current_pids[i] = new_pids[i];
+    // update state
+    pid_count = t_count;
+    for (int i = 0; i < t_count; i++) {
+        prev_pids[i] = temp_pids[i];
     }
 }
 
 int main() {
-    printf("Starting System Event Logger...\n");
-    system("mkdir -p " TARGET_DIR); // Ensure monitor_dir exists
+    printf("System Event Logger Starting...\n");
     
-    log_event("SYSTEM_START", "Logger initialized. Taking baseline snapshot...");
+    // make sure dir exists, suppress error if it does
+    system("mkdir monitor_dir 2> /dev/null"); 
     
-    scan_files();
-    scan_processes();
+    add_to_log("SYSTEM_START", "Logger initialized. Taking baseline...");
     
-    printf("Monitoring directory: %s\n", TARGET_DIR);
-    printf("Press Ctrl+C to stop.\n\n");
+    // initial scan
+    check_files();
+    check_procs();
     
-    // Continuous monitoring loop
+    printf("Monitoring folder: %s\n", FOLDER_NAME);
+    printf("Press Ctrl+C to exit.\n\n");
+    
     while (1) {
-        scan_files();
-        scan_processes();
-        sleep(2); // Sleep prevents 100% CPU usage
+        check_files();
+        check_procs();
+        
+        // wait for 2 seconds
+        sleep(2); 
     }
     
     return 0;
